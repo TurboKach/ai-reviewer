@@ -38,40 +38,37 @@ class PRReviewer:
             logger.error(f"Error initializing: {e}")
             raise
 
+    def get_existing_comments(self):
+        """Get all existing review comments on the PR."""
+        comments = self.pull_request.get_review_comments()
+        existing = {}
+        for comment in comments:
+            key = f"{comment.path}:{comment.position}"
+            existing[key] = comment.body
+        logger.debug(f"Found {len(existing)} existing comments: {existing}")
+        return existing
+
     def calculate_line_positions(self, patch: str) -> Dict[int, int]:
-        """
-        Calculate the position of each line in the patch.
-        Returns a dictionary mapping line numbers to patch positions.
-        """
+        """Calculate the position of each line in the patch."""
         positions = {}
         lines = patch.split('\n')
-        position = 1  # GitHub's position is 1-based
-        target_line = 0
+        position = 0
         
         logger.debug(f"Processing patch:\n{patch}")
         
         for line in lines:
-            # Track position in the patch
             if line.startswith('@@'):
-                # Parse the hunk header
-                match = re.search(r'\+(\d+)', line)
+                match = re.search(r'\@\@ \-\d+,?\d* \+(\d+),?(\d*)', line)
                 if match:
-                    target_line = int(match.group(1))
-                    logger.debug(f"New hunk starting at line {target_line}")
+                    current_line = int(match.group(1))
+                    logger.debug(f"Found hunk starting at line {current_line}")
             else:
-                # Skip removal lines (starting with -)
-                if not line.startswith('-'):
-                    if line.startswith('+'):
-                        # This is a new line
-                        positions[target_line] = position
-                        target_line += 1
-                    else:
-                        # This is a context line
-                        positions[target_line] = position
-                        target_line += 1
                 position += 1
-                
-        logger.debug(f"Calculated positions: {positions}")
+                if not line.startswith('-'):
+                    positions[current_line] = position
+                    current_line += 1
+                    
+        logger.debug(f"Line to position mapping: {json.dumps(positions, indent=2)}")
         return positions
     
     def review_code(self, code: str, file_path: str) -> List[Dict]:
@@ -108,15 +105,11 @@ The code to review is from {file_path}:
                 max_tokens=2000,
                 temperature=0,
                 system="You are a senior software engineer performing a code review. Be thorough but constructive. Focus on important issues rather than style nitpicks. Always respond with properly formatted JSON.",
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
+                messages=[{"role": "user", "content": prompt}]
             )
             
-            # Log the raw response for debugging
             logger.debug(f"Claude API raw response: {response.content[0].text}")
             
-            # Try to parse response as JSON
             try:
                 review_comments = json.loads(response.content[0].text)
                 if not isinstance(review_comments, list):
@@ -137,9 +130,12 @@ The code to review is from {file_path}:
     def run_review(self):
         """Main method to run the PR review process."""
         try:
-            # Get files changed in PR
             changed_files = self.pull_request.get_files()
             draft_review_comments = []
+            general_comments = []
+            
+            # Get existing comments to avoid duplicates
+            existing_comments = self.get_existing_comments()
             
             for file in changed_files:
                 if file.status == "removed":
@@ -169,43 +165,53 @@ The code to review is from {file_path}:
                 # Convert comments to GitHub review format
                 for comment in file_comments:
                     line_num = comment['line']
-                    try:
-                        # Try to find the closest line in the patch
-                        closest_line = min(line_positions.keys(), 
-                                        key=lambda x: abs(x - line_num))
-                        drift = abs(closest_line - line_num)
+                    available_lines = sorted(line_positions.keys())
+                    
+                    # Find the closest available line in the patch
+                    closest_idx = min(range(len(available_lines)), 
+                                   key=lambda i: abs(available_lines[i] - line_num))
+                    closest_line = available_lines[closest_idx]
+                    
+                    # Check if we're within a reasonable range
+                    if abs(closest_line - line_num) <= 3:  # GitHub's typical context size
+                        position = line_positions[closest_line]
+                        logger.debug(f"Mapping comment from line {line_num} to position {position} (line {closest_line} in patch)")
                         
-                        if drift <= 2:  # Allow some drift in line numbers
-                            position = line_positions[closest_line]
+                        comment_body = f"{comment['comment']}\n\n```suggestion\n{comment.get('suggestion', '')}\n```"
+                        comment_key = f"{file.filename}:{position}"
+                        
+                        # Check if we already have a similar comment
+                        if comment_key not in existing_comments:
                             draft_review_comments.append({
                                 'path': file.filename,
                                 'position': position,
-                                'body': f"{comment['comment']}\n\n```suggestion\n{comment.get('suggestion', '')}\n```"
+                                'body': comment_body
                             })
-                            logger.debug(f"Mapped line {line_num} to position {position}")
-                        else:
-                            logger.warning(f"Line {line_num} too far from nearest match in patch")
-                    except ValueError:
-                        logger.warning(f"No suitable position found for line {line_num}")
+                    else:
+                        logger.warning(f"Line {line_num} not found in patch context (closest was {closest_line})")
+                        comment_body = f"**In file {file.filename}, line {line_num}:**\n\n{comment['comment']}\n\n```suggestion\n{comment.get('suggestion', '')}\n```"
+                        general_comments.append(comment_body)
             
-            if draft_review_comments:
-                logger.info(f"Creating review with {len(draft_review_comments)} comments")
+            if draft_review_comments or general_comments:
+                logger.info(f"Creating review with {len(draft_review_comments)} inline comments and {len(general_comments)} general comments")
+                
+                review_body = "🤖 Code Review Summary:\n\n"
+                if draft_review_comments:
+                    review_body += f"Found {len(draft_review_comments)} suggestions for improvement."
+                else:
+                    review_body += "✨ Great job! The code looks clean and well-written."
+                
+                if general_comments:
+                    review_body += "\n\n### Additional Comments:\n\n" + "\n\n".join(general_comments)
+                
                 commit = self.repo.get_commit(self.pull_request.head.sha)
-                
-                logger.debug(f"Review comments: {json.dumps(draft_review_comments, indent=2)}")
-                
-                try:
-                    self.pull_request.create_review(
-                        commit=commit,
-                        comments=draft_review_comments,
-                        body="Code review by Claude",
-                        event="COMMENT"
-                    )
-                    logger.info("Review created successfully")
-                except Exception as e:
-                    logger.error(f"Error creating review: {e}")
-                    logger.error(f"Response data: {e.data if hasattr(e, 'data') else 'No data'}")
-                    raise
+                self.pull_request.create_review(
+                    commit=commit,
+                    comments=draft_review_comments,
+                    body=review_body,
+                    event="COMMENT"
+                )
+                logger.info("Review created successfully")
 
         except Exception as e:
             logger.error(f"Error in run_review: {e}", exc_info=True)
