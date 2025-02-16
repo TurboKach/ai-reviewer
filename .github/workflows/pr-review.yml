@@ -23,10 +23,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install anthropic requests
+          pip install anthropic PyGithub
           
       - name: Run PR Review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Example file filters - customize these for your needs
+          PR_REVIEW_WHITELIST: "*"  # Review all files
+          PR_REVIEW_BLACKLIST: "tests/*,*_test.py"      # Skip test files
         run: python .github/scripts/pr_review.py
