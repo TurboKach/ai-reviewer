@@ -100,8 +100,8 @@ env:
 - If no whitelist is specified, all files are reviewed by default
 - **Blacklist takes precedence over whitelist**
 
-Example patterns:
--`*` - All files
+Example patterns:  
+- `*` - All files
 - `*.py` - All Python files
 - `src/*.js` - JavaScript files in the src directory
 - `frontend/**/*.tsx` - All TypeScript React files in frontend directory
