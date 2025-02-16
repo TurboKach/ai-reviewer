@@ -97,27 +97,66 @@ class PRReviewer:
         return existing
 
     def calculate_line_positions(self, patch: str) -> Dict[int, int]:
-        """Calculate the position of each line in the patch."""
+        """
+        Calculate the position of each line in the patch with improved accuracy.
+        Returns a mapping of actual file line numbers to patch positions.
+        """
         positions = {}
         lines = patch.split('\n')
         position = 0
+        current_line = 0
+        in_hunk = False
         
         logger.debug(f"Processing patch:\n{patch}")
         
         for line in lines:
+            # Parse hunk header
             if line.startswith('@@'):
+                in_hunk = True
                 match = re.search(r'\@\@ \-\d+,?\d* \+(\d+),?(\d*)', line)
                 if match:
                     current_line = int(match.group(1))
                     logger.debug(f"Found hunk starting at line {current_line}")
-            else:
-                position += 1
-                if not line.startswith('-'):
+                    position += 1
+                    continue
+            
+            if not in_hunk:
+                continue
+                
+            # Track position for every line in the patch
+            position += 1
+            
+            # Only map lines that are context or additions (not removals)
+            if not line.startswith('-'):
+                if line.startswith('+'):
                     positions[current_line] = position
-                    current_line += 1
-                    
+                else:  # Context line
+                    positions[current_line] = position
+                current_line += 1
+        
         logger.debug(f"Line to position mapping: {json.dumps(positions, indent=2)}")
         return positions
+    
+    def find_closest_line(self, target_line: int, positions: Dict[int, int], 
+                         max_distance: int = 3) -> Optional[int]:
+        """
+        Find the closest available line in the patch within max_distance.
+        Returns actual line number if found, None if no suitable line is found.
+        """
+        if target_line in positions:
+            return target_line
+            
+        available_lines = sorted(positions.keys())
+        if not available_lines:
+            return None
+            
+        # Find closest line that's within max_distance
+        closest_line = min(available_lines, 
+                          key=lambda x: abs(x - target_line))
+                          
+        if abs(closest_line - target_line) <= max_distance:
+            return closest_line
+        return None
     
     def review_code(self, code: str, file_path: str) -> List[Dict]:
         """Send code to Claude API for review."""
@@ -222,33 +261,36 @@ The code to review is from {file_path}:
                 
                 # Convert comments to GitHub review format
                 for comment in file_comments:
-                    line_num = comment['line']
-                    available_lines = sorted(line_positions.keys())
-                    
-                    # Find the closest available line in the patch
-                    closest_idx = min(range(len(available_lines)), 
-                                   key=lambda i: abs(available_lines[i] - line_num))
-                    closest_line = available_lines[closest_idx]
-                    
-                    # Check if we're within a reasonable range
-                    if abs(closest_line - line_num) <= 3:  # GitHub's typical context size
-                        position = line_positions[closest_line]
-                        logger.debug(f"Mapping comment from line {line_num} to position {position} (line {closest_line} in patch)")
-                        
-                        comment_body = f"{comment['comment']}\n\n```suggestion\n{comment.get('suggestion', '')}\n```"
-                        comment_key = f"{file.filename}:{position}"
-                        
-                        # Check if we already have a similar comment
-                        if comment_key not in existing_comments:
-                            draft_review_comments.append({
-                                'path': file.filename,
-                                'position': position,
-                                'body': comment_body
-                            })
-                    else:
-                        logger.warning(f"Line {line_num} not found in patch context (closest was {closest_line})")
-                        comment_body = f"**In file {file.filename}, line {line_num}:**\n\n{comment['comment']}\n\n```suggestion\n{comment.get('suggestion', '')}\n```"
-                        general_comments.append(comment_body)
+                            line_num = comment['line']
+                            
+                            if file.patch:
+                                line_positions = self.calculate_line_positions(file.patch)
+                                logger.debug(f"Line positions map: {line_positions}")
+                                
+                                # Find appropriate line to attach comment to
+                                mapped_line = self.find_closest_line(line_num, line_positions)
+                                
+                                if mapped_line is not None:
+                                    position = line_positions[mapped_line]
+                                    logger.debug(f"Mapping comment from line {line_num} to position {position} (line {mapped_line} in patch)")
+                                    
+                                    comment_body = f"{comment['comment']}\n\n```suggestion\n{comment.get('suggestion', '')}\n```"
+                                    comment_key = f"{file.filename}:{position}"
+                                    
+                                    # Check if we already have a similar comment
+                                    if comment_key not in existing_comments:
+                                        draft_review_comments.append({
+                                            'path': file.filename,
+                                            'position': position,
+                                            'body': comment_body
+                                        })
+                                else:
+                                    logger.warning(f"Line {line_num} not found in patch context")
+                                    comment_body = f"**In file {file.filename}, line {line_num}:**\n\n{comment['comment']}\n\n```suggestion\n{comment.get('suggestion', '')}\n```"
+                                    general_comments.append(comment_body)
+                            else:
+                                logger.warning(f"No patch found for {file.filename}")
+                                continue
             
             if draft_review_comments or general_comments or skipped_files:
                 logger.info(f"Creating review with {len(draft_review_comments)} inline comments and {len(general_comments)} general comments")
