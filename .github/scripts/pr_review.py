@@ -7,10 +7,53 @@ import base64
 import json
 import logging
 import re
+from fnmatch import fnmatch
+from dataclasses import dataclass
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+@dataclass
+class FileFilterConfig:
+    whitelist_patterns: List[str]
+    blacklist_patterns: List[str]
+
+    @classmethod
+    def from_env(cls) -> 'FileFilterConfig':
+        """Create config from environment variables."""
+        whitelist = os.getenv('PR_REVIEW_WHITELIST', '').split(',')
+        blacklist = os.getenv('PR_REVIEW_BLACKLIST', '').split(',')
+        
+        # Clean up empty strings and whitespace
+        whitelist = [p.strip() for p in whitelist if p.strip()]
+        blacklist = [p.strip() for p in blacklist if p.strip()]
+        
+        # If no whitelist is specified, default to allowing all files
+        if not whitelist:
+            whitelist = ['*']
+            
+        return cls(whitelist_patterns=whitelist, blacklist_patterns=blacklist)
+    
+    def should_review_file(self, filename: str) -> bool:
+        """
+        Determine if a file should be reviewed based on whitelist and blacklist patterns.
+        Blacklist takes precedence over whitelist.
+        """
+        # First check blacklist - if file matches any blacklist pattern, exclude it
+        for pattern in self.blacklist_patterns:
+            if fnmatch(filename, pattern):
+                logger.debug(f"File {filename} matched blacklist pattern {pattern}")
+                return False
+                
+        # Then check whitelist - file must match at least one whitelist pattern
+        for pattern in self.whitelist_patterns:
+            if fnmatch(filename, pattern):
+                logger.debug(f"File {filename} matched whitelist pattern {pattern}")
+                return True
+                
+        logger.debug(f"File {filename} did not match any whitelist patterns")
+        return False
 
 class PRReviewer:
     def __init__(self):
@@ -18,6 +61,11 @@ class PRReviewer:
         self.anthropic_key = os.environ["ANTHROPIC_API_KEY"]
         self.event_path = os.environ["GITHUB_EVENT_PATH"]
         self.repository = os.environ["GITHUB_REPOSITORY"]
+        
+        # Initialize file filter config
+        self.file_filter = FileFilterConfig.from_env()
+        logger.info(f"Initialized with whitelist: {self.file_filter.whitelist_patterns}")
+        logger.info(f"Initialized with blacklist: {self.file_filter.blacklist_patterns}")
         
         # Initialize API clients
         self.claude = anthropic.Client(api_key=self.anthropic_key)
@@ -137,11 +185,21 @@ The code to review is from {file_path}:
             # Get existing comments to avoid duplicates
             existing_comments = self.get_existing_comments()
             
+            skipped_files = []
+            reviewed_files = []
+            
             for file in changed_files:
                 if file.status == "removed":
                     logger.info(f"Skipping removed file: {file.filename}")
                     continue
                 
+                # Check if file should be reviewed based on filters
+                if not self.file_filter.should_review_file(file.filename):
+                    logger.info(f"Skipping {file.filename} based on filter configuration")
+                    skipped_files.append(file.filename)
+                    continue
+                    
+                reviewed_files.append(file.filename)
                 logger.info(f"Reviewing: {file.filename}")
                 
                 # Get file content
@@ -192,14 +250,25 @@ The code to review is from {file_path}:
                         comment_body = f"**In file {file.filename}, line {line_num}:**\n\n{comment['comment']}\n\n```suggestion\n{comment.get('suggestion', '')}\n```"
                         general_comments.append(comment_body)
             
-            if draft_review_comments or general_comments:
+            if draft_review_comments or general_comments or skipped_files:
                 logger.info(f"Creating review with {len(draft_review_comments)} inline comments and {len(general_comments)} general comments")
                 
                 review_body = "🤖 Code Review Summary:\n\n"
+                
+                if reviewed_files:
+                    review_body += f"Reviewed {len(reviewed_files)} files:\n"
+                    for filename in reviewed_files:
+                        review_body += f"- {filename}\n"
+                
+                if skipped_files:
+                    review_body += f"\nSkipped {len(skipped_files)} files based on filter configuration:\n"
+                    for filename in skipped_files:
+                        review_body += f"- {filename}\n"
+                
                 if draft_review_comments:
-                    review_body += f"Found {len(draft_review_comments)} suggestions for improvement."
+                    review_body += f"\nFound {len(draft_review_comments)} suggestions for improvement."
                 else:
-                    review_body += "✨ Great job! The code looks clean and well-written."
+                    review_body += "\n✨ Great job! The code looks clean and well-written."
                 
                 if general_comments:
                     review_body += "\n\n### Additional Comments:\n\n" + "\n\n".join(general_comments)
@@ -212,6 +281,8 @@ The code to review is from {file_path}:
                     event="COMMENT"
                 )
                 logger.info("Review created successfully")
+            else:
+                logger.info("No files were reviewed or no comments to make")
 
         except Exception as e:
             logger.error(f"Error in run_review: {e}", exc_info=True)
