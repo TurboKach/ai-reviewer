@@ -1,35 +1,49 @@
 name: Claude PR Review
+
+# Define when this workflow should trigger
 on:
   pull_request:
-    types: [opened, synchronize]
+    branches: 
+      - main  # Only run on PRs targeting the 'main' branch. "*"  # Matches any branch name
+      - dev   # Also run on PRs targeting the 'dev' branch (adjust as needed)
+    types: [opened, synchronize]  # Run when a PR is opened or updated
 
 jobs:
   review:
-    runs-on: ubuntu-latest
+    # Define the environment where the job runs
+    runs-on: ubuntu-latest  # Runs on the latest Ubuntu runner
+    
+    # Set permissions for this job
     permissions:
-      pull-requests: write
-      contents: read
+      pull-requests: write  # Allows writing PR comments
+      contents: read  # Grants read access to repository contents
     
     steps:
-      - uses: actions/checkout@v4
+      # Checkout the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          
+          fetch-depth: 0  # Ensures full history is available for context
+      
+      # Set up Python environment
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          
+          python-version: '3.11'  # Specify Python version
+      
+      # Install required dependencies
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install anthropic PyGithub
-          
+          python -m pip install --upgrade pip  # Upgrade pip
+          pip install anthropic==0.45.2 PyGithub==2.6.0  # Install specific versions of required libraries
+      
+      # Run the PR review script
       - name: Run PR Review
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Example file filters - customize these for your needs
-          PR_REVIEW_WHITELIST: "*"  # Review all files
-          PR_REVIEW_BLACKLIST: "tests/*,*_test.py"      # Skip test files
-        run: python .github/scripts/pr_review.py
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub token for authentication
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}  # API key for Claude AI
+          
+          # File filtering settings (modify as needed)
+          PR_REVIEW_WHITELIST: "*"  # Review all files in PR
+          PR_REVIEW_BLACKLIST: "tests/*,*_test.py"  # Skip test files in review
+        run: python .github/scripts/pr_review.py  # Execute the PR review script
