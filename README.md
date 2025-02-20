@@ -22,51 +22,6 @@ The easiest way to add this reviewer to your repository:
    - `.github/workflows/pr-review.yml` - the GitHub Action configuration
    - `.github/scripts/pr_review.py` - the review script
 
-Alternatively, if you want to set it up manually:
-
-1. Create a folder structure `.github/workflows` and `.github/scripts` in your repository
-2. Create a file `.github/workflows/pr-review.yml` with this content:
-
-```yaml
-name: Claude PR Review
-on:
-  pull_request:
-    types: [opened, synchronize]
-
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      contents: read
-    
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install anthropic PyGithub
-          
-      - name: Run PR Review
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Optional: Configure file filters
-          PR_REVIEW_WHITELIST: "*.py,*.js,*.tsx"  # Review only specific files
-          PR_REVIEW_BLACKLIST: "tests/*"          # Exclude test files
-        run: python .github/scripts/pr_review.py
-```
-
-2. Create `.github/scripts/pr_review.py` with the provided reviewer script
-
 Your repository structure should look like this:
 ```
 your-repository/
@@ -78,7 +33,7 @@ your-repository/
 ├── [your other files and folders]
 ```
 
-3. Add your Anthropic API key to your repository secrets:
+2. Add your Anthropic API key to your repository secrets:
    - Go to Settings > Secrets and variables > Actions
    - Add a new secret named `ANTHROPIC_API_KEY`
    - Set the value to your Claude API key
