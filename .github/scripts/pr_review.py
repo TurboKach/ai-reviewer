@@ -188,7 +188,7 @@ The code to review is from {file_path}:
         try:
             logger.debug("Sending request to Claude API")
             response = self.claude.messages.create(
-                model="claude-3-opus-20240229",
+                model="claude-3-7-sonnet-20250219",
                 max_tokens=2000,
                 temperature=0,
                 system="You are a senior software engineer performing a code review. Be thorough but constructive. Focus on important issues rather than style nitpicks. Always respond with properly formatted JSON.",
